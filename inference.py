@@ -17,7 +17,7 @@ from data.MBD.infer import net1_net2_infer_single_im
 
 
 def dewarp_prompt(img):
-    mask = net1_net2_infer_single_im(img,'data/MBD/checkpoint/mbd.pkl')
+    mask = net1_net2_infer_single_im(img,'models/mbd.pkl')
     base_coord = utils.getBasecoord(256,256)/256
     img[mask==0]=0
     mask = cv2.resize(mask,(256,256))/255
@@ -93,9 +93,24 @@ def binarization_promptv2(img):
     high_frequency = cv2.cvtColor(high_frequency,cv2.COLOR_BGR2GRAY)
     return np.concatenate((np.expand_dims(thresh,-1),np.expand_dims(high_frequency,-1),np.expand_dims(result,-1)),-1)
 
-def dewarping(model,im_path):
+def dewarping(model,im_path,memory_fix=0):
     INPUT_SIZE=256
     im_org = cv2.imread(im_path)
+    
+    # OOM Fix: Resize down input based on level only if image is larger than limit
+    h_orig, w_orig = im_org.shape[:2]
+    was_resized = False
+    
+    limit_map = {1: 1500, 2: 2000, 3: 3000}
+    max_dim = limit_map.get(memory_fix, 0)
+
+    # Only resize if max_dim is set AND image is larger than max_dim
+    if max_dim > 0 and max(h_orig, w_orig) > max_dim:
+        scale = float(max_dim) / max(h_orig, w_orig)
+        new_w, new_h = int(w_orig * scale), int(h_orig * scale)
+        im_org = cv2.resize(im_org, (new_w, new_h))
+        was_resized = True
+
     im_masked, prompt_org = dewarp_prompt(im_org.copy())
 
     h,w = im_masked.shape[:2]
@@ -127,10 +142,23 @@ def dewarping(model,im_path):
     prompt_org = (prompt_org*255).astype(np.uint8)
     prompt_org = cv2.resize(prompt_org,im_org.shape[:2][::-1])
 
+    # OOM Fix: Resize back output to original
+    if was_resized:
+        out_im = cv2.resize(out_im, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
+        prompt_org = cv2.resize(prompt_org, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
+
     return prompt_org[:,:,0],prompt_org[:,:,1],prompt_org[:,:,2],out_im
 
-def appearance(model,im_path):
-    MAX_SIZE=1600
+def appearance(model,im_path,memory_fix=0):
+    MAX_SIZE=1600 # Default default
+    
+    if memory_fix == 1:
+        MAX_SIZE = 1500
+    elif memory_fix == 2:
+        MAX_SIZE = 2000
+    elif memory_fix == 3:
+        MAX_SIZE = 3000
+
     # obtain im and prompt
     im_org = cv2.imread(im_path)
     h,w = im_org.shape[:2]
@@ -138,6 +166,7 @@ def appearance(model,im_path):
     in_im = np.concatenate((im_org,prompt),-1)
 
     # constrain the max resolution 
+    # If image is smaller than MAX_SIZE, it uses stride_integral (no resize, just padding)
     if max(w,h) < MAX_SIZE:
         in_im,padding_h,padding_w = stride_integral(in_im,8)
     else:
@@ -168,8 +197,16 @@ def appearance(model,im_path):
     return prompt[:,:,0],prompt[:,:,1],prompt[:,:,2],out_im
         
 
-def deshadowing(model,im_path):
-    MAX_SIZE=1600
+def deshadowing(model,im_path,memory_fix=0):
+    MAX_SIZE=1600 # Default default
+    
+    if memory_fix == 1:
+        MAX_SIZE = 1500
+    elif memory_fix == 2:
+        MAX_SIZE = 2000
+    elif memory_fix == 3:
+        MAX_SIZE = 3000
+
     # obtain im and prompt
     im_org = cv2.imread(im_path)
     h,w = im_org.shape[:2]
@@ -207,9 +244,23 @@ def deshadowing(model,im_path):
     return prompt[:,:,0],prompt[:,:,1],prompt[:,:,2],out_im
 
 
-def deblurring(model,im_path):
+def deblurring(model,im_path,memory_fix=0):
     # setup image
     im_org = cv2.imread(im_path)
+    
+    # OOM Fix: Resize down input
+    h_orig, w_orig = im_org.shape[:2]
+    was_resized = False
+    
+    limit_map = {1: 1500, 2: 2000, 3: 3000}
+    max_dim = limit_map.get(memory_fix, 0)
+
+    if max_dim > 0 and max(h_orig, w_orig) > max_dim:
+        scale = float(max_dim) / max(h_orig, w_orig)
+        new_w, new_h = int(w_orig * scale), int(h_orig * scale)
+        im_org = cv2.resize(im_org, (new_w, new_h))
+        was_resized = True
+
     in_im,padding_h,padding_w = stride_integral(im_org,8)
     prompt = deblur_prompt(in_im)
     in_im = np.concatenate((in_im,prompt),-1)
@@ -227,12 +278,31 @@ def deblurring(model,im_path):
         pred = (pred*255).astype(np.uint8)
         out_im = pred[padding_h:,padding_w:]
     
+    # OOM Fix: Resize back output to original
+    if was_resized:
+        out_im = cv2.resize(out_im, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
+        prompt = cv2.resize(prompt, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
+    
     return prompt[:,:,0],prompt[:,:,1],prompt[:,:,2],out_im
 
 
 
-def binarization(model,im_path):
+def binarization(model,im_path,memory_fix=0):
     im_org = cv2.imread(im_path)
+
+    # OOM Fix: Resize down input
+    h_orig, w_orig = im_org.shape[:2]
+    was_resized = False
+    
+    limit_map = {1: 1500, 2: 2000, 3: 3000}
+    max_dim = limit_map.get(memory_fix, 0)
+
+    if max_dim > 0 and max(h_orig, w_orig) > max_dim:
+        scale = float(max_dim) / max(h_orig, w_orig)
+        new_w, new_h = int(w_orig * scale), int(h_orig * scale)
+        im_org = cv2.resize(im_org, (new_w, new_h))
+        was_resized = True
+
     im,padding_h,padding_w = stride_integral(im_org,8)
     prompt = binarization_promptv2(im)
     h,w = im.shape[:2]
@@ -252,19 +322,26 @@ def binarization(model,im_path):
         pred = cv2.resize(pred,(w,h))
         out_im = pred[padding_h:,padding_w:]
     
+    # OOM Fix: Resize back output to original
+    if was_resized:
+        out_im = cv2.resize(out_im, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
+        prompt = cv2.resize(prompt, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
+    
     return prompt[:,:,0],prompt[:,:,1],prompt[:,:,2],out_im
 
 def get_args():
     parser = argparse.ArgumentParser(description='Params')
-    parser.add_argument('--model_path', nargs='?', type=str, default='./checkpoints/docres.pkl',help='Path of the saved checkpoint')
+    parser.add_argument('--model_path', nargs='?', type=str, default='models/docres.pkl',help='Path of the saved checkpoint')
     parser.add_argument('--im_path', nargs='?', type=str, default='./distorted/',
                         help='Path of input document image')
-    parser.add_argument('--out_folder', nargs='?', type=str, default='./restorted/',
+    parser.add_argument('--out_folder', nargs='?', type=str, default='./output/',
                         help='Folder of the output images')
     parser.add_argument('--task', nargs='?', type=str, default='dewarping', 
                         help='task that need to be executed')
     parser.add_argument('--save_dtsprompt', nargs='?', type=int, default=0, 
                         help='Width of the input image')
+    parser.add_argument('--memory_fix', nargs='?', type=int, default=0, 
+                        help='1=1500px, 2=2000px, 3=3000px limit on long edge to avoid OOM.')
     args = parser.parse_args()
     possible_tasks = ['dewarping','deshadowing','appearance','deblurring','binarization','end2end']
     assert args.task in possible_tasks, 'Unsupported task, task must be one of '+', '.join(possible_tasks)
@@ -295,27 +372,30 @@ def model_init(args):
     model = model.to(DEVICE)
     return model
 
-def inference_one_im(model,im_path,task):
-    if task=='dewarping':
-        prompt1,prompt2,prompt3,restorted = dewarping(model,im_path)
-    elif task=='deshadowing':
-        prompt1,prompt2,prompt3,restorted = deshadowing(model,im_path)
-    elif task=='appearance':
-        prompt1,prompt2,prompt3,restorted = appearance(model,im_path)
-    elif task=='deblurring':
-        prompt1,prompt2,prompt3,restorted = deblurring(model,im_path)
-    elif task=='binarization':
-        prompt1,prompt2,prompt3,restorted = binarization(model,im_path)
-    elif task=='end2end':
-        prompt1,prompt2,prompt3,restorted = dewarping(model,im_path)
-        cv2.imwrite('restorted/step1.jpg',restorted)
-        prompt1,prompt2,prompt3,restorted = deshadowing(model,'restorted/step1.jpg')
-        cv2.imwrite('restorted/step2.jpg',restorted)
-        prompt1,prompt2,prompt3,restorted = appearance(model,'restorted/step2.jpg')
-        # os.remove('restorted/step1.jpg')
-        # os.remove('restorted/step2.jpg')
+def inference_one_im(model,im_path,args):
+    task = args.task
+    memory_fix = args.memory_fix
 
-    return prompt1,prompt2,prompt3,restorted
+    if task=='dewarping':
+        prompt1,prompt2,prompt3,output = dewarping(model,im_path,memory_fix)
+    elif task=='deshadowing':
+        prompt1,prompt2,prompt3,output = deshadowing(model,im_path,memory_fix)
+    elif task=='appearance':
+        prompt1,prompt2,prompt3,output = appearance(model,im_path,memory_fix)
+    elif task=='deblurring':
+        prompt1,prompt2,prompt3,output = deblurring(model,im_path,memory_fix)
+    elif task=='binarization':
+        prompt1,prompt2,prompt3,output = binarization(model,im_path,memory_fix)
+    elif task=='end2end':
+        prompt1,prompt2,prompt3,output = dewarping(model,im_path,memory_fix)
+        cv2.imwrite('output/step1.jpg',output)
+        prompt1,prompt2,prompt3,output = deshadowing(model,'output/step1.jpg',memory_fix)
+        cv2.imwrite('output/step2.jpg',output)
+        prompt1,prompt2,prompt3,output = appearance(model,'output/step2.jpg',memory_fix)
+        # os.remove('output/step1.jpg')
+        # os.remove('output/step2.jpg')
+
+    return prompt1,prompt2,prompt3,output
 
 
 def save_results(
@@ -324,10 +404,11 @@ def save_results(
     task: str,
     save_dtsprompt: bool,
 ):
+    os.makedirs(out_folder, exist_ok=True)
     im_name = os.path.split(img_path)[-1]
     im_format = '.'+im_name.split('.')[-1]
     save_path = os.path.join(out_folder, im_name.replace(im_format, '_' + task + im_format))
-    cv2.imwrite(save_path, restorted)
+    cv2.imwrite(save_path, output)
     if save_dtsprompt:
         cv2.imwrite(save_path.replace(im_format, '_prompt1' + im_format), prompt1)
         cv2.imwrite(save_path.replace(im_format, '_prompt2' + im_format), prompt2)
@@ -347,7 +428,7 @@ if __name__ == '__main__':
         img_paths = glob.glob(os.path.join(img_source, '*'))
         for img_path in img_paths:
             ## inference
-            prompt1,prompt2,prompt3,restorted = inference_one_im(model,img_path,args.task)
+            prompt1,prompt2,prompt3,output = inference_one_im(model,img_path,args)
 
             ## results saving
             save_results(
@@ -359,7 +440,7 @@ if __name__ == '__main__':
             
     else:
         ## inference
-        prompt1,prompt2,prompt3,restorted = inference_one_im(model,img_source,args.task)
+        prompt1,prompt2,prompt3,output = inference_one_im(model,img_source,args)
 
         ## results saving
         save_results(
