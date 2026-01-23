@@ -13,8 +13,8 @@
 2026-01-23 Updated the script to fix the Cuda out of Memory.
 
 # TO DO
-Add another model support for binarization
-GREATE GUI
+* Add another model support for binarization
+* Create GUI
 
 ## SETUP
 ```bash
