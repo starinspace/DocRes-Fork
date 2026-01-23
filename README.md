@@ -14,6 +14,7 @@
 
 # TO DO
 Add another model support for binarization
+GREATE GUI
 
 ## SETUP
 ```bash
