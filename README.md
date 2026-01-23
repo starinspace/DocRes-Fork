@@ -6,7 +6,7 @@
 </div>
 
 <p align="center">
-<img src="images/motivation.jpg" width="400">
+<img width="981" height="738" alt="bild" src="https://github.com/user-attachments/assets/aeb2ddd6-94c5-4957-b8f6-b544b066a373" />
 </p>
 
 # NEW
