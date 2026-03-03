@@ -7,7 +7,7 @@ import argparse
 import numpy as np
 
 import torch
-
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 from utils import convert_state_dict
 from models import restormer_arch
 from data.preprocess.crop_merge_image import stride_integral
@@ -149,7 +149,96 @@ def dewarping(model,im_path,memory_fix=0):
 
     return prompt_org[:,:,0],prompt_org[:,:,1],prompt_org[:,:,2],out_im
 
-def appearance(model,im_path,memory_fix=0):
+def appearance(model, im_path, memory_fix=0):
+
+    MAX_SIZE = 1600
+
+    if memory_fix == 1:
+        MAX_SIZE = 1500
+    elif memory_fix == 2:
+        MAX_SIZE = 2000
+    elif memory_fix == 3:
+        MAX_SIZE = 3000
+
+    # -------------------------
+    # Load image
+    # -------------------------
+    im_org = cv2.imread(im_path)
+    orig_h, orig_w = im_org.shape[:2]
+
+    # Generate prompt
+    prompt = appearance_prompt(im_org)
+    in_im = np.concatenate((im_org, prompt), -1)
+
+    # -------------------------
+    # Resize if larger than MAX_SIZE
+    # -------------------------
+    resized = False
+    if max(orig_w, orig_h) > MAX_SIZE:
+        scale = float(MAX_SIZE) / max(orig_w, orig_h)
+        new_w = int(orig_w * scale)
+        new_h = int(orig_h * scale)
+        in_im = cv2.resize(in_im, (new_w, new_h))
+        resized = True
+    else:
+        new_h, new_w = orig_h, orig_w
+
+    # -------------------------
+    # CRITICAL FIX
+    # Pad to multiple of 8
+    # -------------------------
+    factor = 8
+
+    pad_h = (factor - new_h % factor) % factor
+    pad_w = (factor - new_w % factor) % factor
+
+    if pad_h != 0 or pad_w != 0:
+        in_im = cv2.copyMakeBorder(
+            in_im,
+            0, pad_h,
+            0, pad_w,
+            cv2.BORDER_REFLECT
+        )
+
+    padded_h, padded_w = in_im.shape[:2]
+
+    # -------------------------
+    # Normalize + tensor
+    # -------------------------
+    in_im = in_im / 255.0
+    in_im = torch.from_numpy(in_im.transpose(2, 0, 1)).unsqueeze(0)
+    in_im = in_im.half().to(DEVICE)
+
+    model = model.half()
+    model.eval()
+
+    # -------------------------
+    # Inference
+    # -------------------------
+    with torch.no_grad():
+        pred = model(in_im)
+        pred = torch.clamp(pred, 0, 1)
+        pred = pred[0].permute(1, 2, 0).cpu().numpy()
+        pred = (pred * 255).astype(np.uint8)
+
+    # -------------------------
+    # Remove padding
+    # -------------------------
+    pred = pred[:new_h, :new_w]
+
+    # -------------------------
+    # Restore to original size
+    # -------------------------
+    if resized:
+        pred[pred == 0] = 1
+        shadow_map = cv2.resize(im_org, (new_w, new_h)).astype(float) / pred.astype(float)
+        shadow_map = cv2.resize(shadow_map, (orig_w, orig_h))
+        shadow_map[shadow_map == 0] = 0.00001
+        out_im = np.clip(im_org.astype(float) / shadow_map, 0, 255).astype(np.uint8)
+    else:
+        out_im = pred
+
+    return prompt[:, :, 0], prompt[:, :, 1], prompt[:, :, 2], out_im
     MAX_SIZE=1600 # Default default
     
     if memory_fix == 1:
