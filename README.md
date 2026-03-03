@@ -11,6 +11,7 @@
 
 # NEW
 2026-01-23 Updated the script to fix the Cuda out of Memory.
+2026-03-03 Fixed a bug with image size problem.
 
 # TO DO
 * Add another model support for binarization
