@@ -12,9 +12,9 @@
 # NEW
 2026-01-23 Updated the script to fix the Cuda out of Memory.
 2026-03-03 Fixed a bug with image size problem.
+2026-03-29 Add another model support for binarization
 
 # TO DO
-* Add another model support for binarization
 * Create GUI
 
 ## SETUP
@@ -31,6 +31,10 @@ pip install -r requirements.txt
 3. Run the following script and the results will be saved in `./output/`. put your examples in `./input/`.
 ```bash
 python inference.py --im_path ./input/for_dewarping.png --task dewarping --memory_fix 2 --save_dtsprompt 1
+```
+You can also use your model trained with traiNNer-redux.
+```bash
+python inference.py --im_path "input\for_binarization.png" --task binarization --model_path models\your_model.safetensors --memory_fix 2
 ```
 
 - `--memory_fix`: fix Cuda out of Memory, use _0_ = No fix (standard), recommended for normal text in big images is _1_, or _2_, for large images with very small text try _3_ = 3000px.
