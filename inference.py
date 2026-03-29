@@ -12,6 +12,23 @@ from utils import convert_state_dict
 from models import restormer_arch
 from data.preprocess.crop_merge_image import stride_integral
 
+# Import safetensors for loading .safetensors files
+try:
+    from safetensors.torch import load_file as safetensors_load
+except ImportError:
+    print("Warning: safetensors not installed. Install with: pip install safetensors")
+    safetensors_load = None
+
+# Import DocRes architecture
+try:
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    from docres_arch import DocRes, docres_base, docres_large
+    DOCRES_AVAILABLE = True
+except ImportError as e:
+    print(f"Warning: DocRes architecture not available: {e}")
+    DOCRES_AVAILABLE = False
+
 os.sys.path.append('./data/MBD/')
 from data.MBD.infer import net1_net2_infer_single_im
 
@@ -96,11 +113,11 @@ def binarization_promptv2(img):
 def dewarping(model,im_path,memory_fix=0):
     INPUT_SIZE=256
     im_org = cv2.imread(im_path)
-    
+
     # OOM Fix: Resize down input based on level only if image is larger than limit
     h_orig, w_orig = im_org.shape[:2]
     was_resized = False
-    
+
     limit_map = {1: 1500, 2: 2000, 3: 3000}
     max_dim = limit_map.get(memory_fix, 0)
 
@@ -149,7 +166,7 @@ def dewarping(model,im_path,memory_fix=0):
 
     return prompt_org[:,:,0],prompt_org[:,:,1],prompt_org[:,:,2],out_im
 
-def appearance(model, im_path, memory_fix=0):
+def appearance(model, im_path, memory_fix=0, model_type='restormer'):
 
     MAX_SIZE = 1600
 
@@ -168,7 +185,13 @@ def appearance(model, im_path, memory_fix=0):
 
     # Generate prompt
     prompt = appearance_prompt(im_org)
-    in_im = np.concatenate((im_org, prompt), -1)
+
+    # DocRes uses 3 channels (auto-coordinate injection)
+    # Restormer uses 6 channels (image + prompt)
+    if model_type == 'docres':
+        in_im = im_org  # DocRes handles coordinates internally
+    else:
+        in_im = np.concatenate((im_org, prompt), -1)
 
     # -------------------------
     # Resize if larger than MAX_SIZE
@@ -207,9 +230,15 @@ def appearance(model, im_path, memory_fix=0):
     # -------------------------
     in_im = in_im / 255.0
     in_im = torch.from_numpy(in_im.transpose(2, 0, 1)).unsqueeze(0)
-    in_im = in_im.half().to(DEVICE)
 
-    model = model.half()
+    # DocRes uses fp32 for coordinate injection, Restormer can use fp16
+    if model_type == 'docres':
+        in_im = in_im.float().to(DEVICE)
+        model = model.float()
+    else:
+        in_im = in_im.half().to(DEVICE)
+        model = model.half()
+
     model.eval()
 
     # -------------------------
@@ -239,56 +268,10 @@ def appearance(model, im_path, memory_fix=0):
         out_im = pred
 
     return prompt[:, :, 0], prompt[:, :, 1], prompt[:, :, 2], out_im
+
+def deshadowing(model,im_path,memory_fix=0, model_type='restormer'):
     MAX_SIZE=1600 # Default default
-    
-    if memory_fix == 1:
-        MAX_SIZE = 1500
-    elif memory_fix == 2:
-        MAX_SIZE = 2000
-    elif memory_fix == 3:
-        MAX_SIZE = 3000
 
-    # obtain im and prompt
-    im_org = cv2.imread(im_path)
-    h,w = im_org.shape[:2]
-    prompt = appearance_prompt(im_org)
-    in_im = np.concatenate((im_org,prompt),-1)
-
-    # constrain the max resolution 
-    # If image is smaller than MAX_SIZE, it uses stride_integral (no resize, just padding)
-    if max(w,h) < MAX_SIZE:
-        in_im,padding_h,padding_w = stride_integral(in_im,8)
-    else:
-        in_im = cv2.resize(in_im,(MAX_SIZE,MAX_SIZE))
-    
-    # normalize
-    in_im = in_im / 255.0
-    in_im = torch.from_numpy(in_im.transpose(2,0,1)).unsqueeze(0)
-
-    # inference
-    in_im = in_im.half().to(DEVICE)
-    model = model.half()
-    with torch.no_grad():
-        pred = model(in_im)
-        pred = torch.clamp(pred,0,1)
-        pred = pred[0].permute(1,2,0).cpu().numpy()
-        pred = (pred*255).astype(np.uint8)
-
-        if max(w,h) < MAX_SIZE:
-            out_im = pred[padding_h:,padding_w:]
-        else:
-            pred[pred==0] = 1
-            shadow_map = cv2.resize(im_org,(MAX_SIZE,MAX_SIZE)).astype(float)/pred.astype(float)
-            shadow_map = cv2.resize(shadow_map,(w,h))
-            shadow_map[shadow_map==0]=0.00001
-            out_im = np.clip(im_org.astype(float)/shadow_map,0,255).astype(np.uint8)
-
-    return prompt[:,:,0],prompt[:,:,1],prompt[:,:,2],out_im
-        
-
-def deshadowing(model,im_path,memory_fix=0):
-    MAX_SIZE=1600 # Default default
-    
     if memory_fix == 1:
         MAX_SIZE = 1500
     elif memory_fix == 2:
@@ -300,21 +283,33 @@ def deshadowing(model,im_path,memory_fix=0):
     im_org = cv2.imread(im_path)
     h,w = im_org.shape[:2]
     prompt = deshadow_prompt(im_org)
-    in_im = np.concatenate((im_org,prompt),-1)
+
+    # DocRes uses 3 channels (auto-coordinate injection)
+    # Restormer uses 6 channels (image + prompt)
+    if model_type == 'docres':
+        in_im = im_org  # DocRes handles coordinates internally
+    else:
+        in_im = np.concatenate((im_org,prompt),-1)
 
     # constrain the max resolution 
     if max(w,h) < MAX_SIZE:
         in_im,padding_h,padding_w = stride_integral(in_im,8)
     else:
         in_im = cv2.resize(in_im,(MAX_SIZE,MAX_SIZE))
-    
+
     # normalize
     in_im = in_im / 255.0
     in_im = torch.from_numpy(in_im.transpose(2,0,1)).unsqueeze(0)
 
     # inference
-    in_im = in_im.half().to(DEVICE)
-    model = model.half()
+    # DocRes uses fp32 for coordinate injection, Restormer can use fp16
+    if model_type == 'docres':
+        in_im = in_im.float().to(DEVICE)
+        model = model.float()
+    else:
+        in_im = in_im.half().to(DEVICE)
+        model = model.half()
+
     with torch.no_grad():
         pred = model(in_im)
         pred = torch.clamp(pred,0,1)
@@ -333,14 +328,14 @@ def deshadowing(model,im_path,memory_fix=0):
     return prompt[:,:,0],prompt[:,:,1],prompt[:,:,2],out_im
 
 
-def deblurring(model,im_path,memory_fix=0):
+def deblurring(model,im_path,memory_fix=0, model_type='restormer'):
     # setup image
     im_org = cv2.imread(im_path)
-    
+
     # OOM Fix: Resize down input
     h_orig, w_orig = im_org.shape[:2]
     was_resized = False
-    
+
     limit_map = {1: 1500, 2: 2000, 3: 3000}
     max_dim = limit_map.get(memory_fix, 0)
 
@@ -352,37 +347,51 @@ def deblurring(model,im_path,memory_fix=0):
 
     in_im,padding_h,padding_w = stride_integral(im_org,8)
     prompt = deblur_prompt(in_im)
-    in_im = np.concatenate((in_im,prompt),-1)
+
+    # DocRes uses 3 channels (auto-coordinate injection)
+    # Restormer uses 6 channels (image + prompt)
+    if model_type == 'docres':
+        in_im = in_im  # Just use the image, DocRes handles coordinates
+    else:
+        in_im = np.concatenate((in_im,prompt),-1)
+
     in_im = in_im / 255.0
     in_im = torch.from_numpy(in_im.transpose(2,0,1)).unsqueeze(0)
-    in_im = in_im.half().to(DEVICE)  
-    # inference
+
+    # DocRes uses fp32 for coordinate injection, Restormer can use fp16
+    if model_type == 'docres':
+        in_im = in_im.float().to(DEVICE)
+        model = model.float()
+    else:
+        in_im = in_im.half().to(DEVICE)
+        model = model.half()
+
     model.to(DEVICE)
     model.eval()
-    model = model.half()
+
     with torch.no_grad():
         pred = model(in_im)
         pred = torch.clamp(pred,0,1)
         pred = pred[0].permute(1,2,0).cpu().numpy()
         pred = (pred*255).astype(np.uint8)
         out_im = pred[padding_h:,padding_w:]
-    
+
     # OOM Fix: Resize back output to original
     if was_resized:
         out_im = cv2.resize(out_im, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
         prompt = cv2.resize(prompt, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
-    
+
     return prompt[:,:,0],prompt[:,:,1],prompt[:,:,2],out_im
 
 
 
-def binarization(model,im_path,memory_fix=0):
+def binarization(model,im_path,memory_fix=0, model_type='restormer'):
     im_org = cv2.imread(im_path)
 
     # OOM Fix: Resize down input
     h_orig, w_orig = im_org.shape[:2]
     was_resized = False
-    
+
     limit_map = {1: 1500, 2: 2000, 3: 3000}
     max_dim = limit_map.get(memory_fix, 0)
 
@@ -395,27 +404,57 @@ def binarization(model,im_path,memory_fix=0):
     im,padding_h,padding_w = stride_integral(im_org,8)
     prompt = binarization_promptv2(im)
     h,w = im.shape[:2]
-    in_im = np.concatenate((im,prompt),-1)
+
+    # DocRes uses 3 channels (auto-coordinate injection)
+    # Restormer uses 6 channels (image + prompt)
+    if model_type == 'docres':
+        in_im = im  # Just use the image, DocRes handles coordinates
+    else:
+        in_im = np.concatenate((im,prompt),-1)
 
     in_im = in_im / 255.0
     in_im = torch.from_numpy(in_im.transpose(2,0,1)).unsqueeze(0)
     in_im = in_im.to(DEVICE)
-    model = model.half()
-    in_im = in_im.half()
+
+    # DocRes uses fp32 for coordinate injection, Restormer can use fp16
+    if model_type == 'docres':
+        model = model.float()
+        in_im = in_im.float()
+    else:
+        model = model.half()
+        in_im = in_im.half()
+
     with torch.no_grad():
         pred = model(in_im)
-        pred = pred[:,:2,:,:]
-        pred = torch.max(torch.softmax(pred,1),1)[1]
-        pred = pred[0].cpu().numpy()
+        # For binarization, DocRes outputs 3 channels, we need to handle this
+        if model_type == 'docres':
+            # DocRes outputs RGB [B, 3, H, W], convert to grayscale for binarization
+            # Take first channel and squeeze batch dim
+            pred = pred[:,0:1,:,:]  # Take first channel, keep dim as [B, 1, H, W]
+            pred = pred.squeeze(0).squeeze(0)  # Remove batch and channel dims -> [H, W]
+        else:
+            pred = pred[:,:2,:,:]
+            pred = torch.max(torch.softmax(pred,1),1)[1]
+            pred = pred.squeeze(0)  # Remove batch dim -> [H, W]
+
+        pred = pred.cpu().numpy()
         pred = (pred*255).astype(np.uint8)
-        pred = cv2.resize(pred,(w,h))
-        out_im = pred[padding_h:,padding_w:]
-    
+
+        # pred should now be 2D [H, W]
+        if len(pred.shape) == 2:
+            pred = cv2.resize(pred,(w,h))
+            out_im = pred[padding_h:,padding_w:]
+        else:
+            # If still has channel dim, squeeze it
+            pred = pred.squeeze()
+            pred = cv2.resize(pred,(w,h))
+            out_im = pred[padding_h:,padding_w:]
+
     # OOM Fix: Resize back output to original
     if was_resized:
         out_im = cv2.resize(out_im, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
         prompt = cv2.resize(prompt, (w_orig, h_orig), interpolation=cv2.INTER_NEAREST)
-    
+
     return prompt[:,:,0],prompt[:,:,1],prompt[:,:,2],out_im
 
 def get_args():
@@ -431,56 +470,143 @@ def get_args():
                         help='Width of the input image')
     parser.add_argument('--memory_fix', nargs='?', type=int, default=0, 
                         help='1=1500px, 2=2000px, 3=3000px limit on long edge to avoid OOM.')
+    parser.add_argument('--model_type', nargs='?', type=str, default='auto',
+                        help='Model architecture: restormer, docres, or auto (auto-detect from filename)')
     args = parser.parse_args()
     possible_tasks = ['dewarping','deshadowing','appearance','deblurring','binarization','end2end']
     assert args.task in possible_tasks, 'Unsupported task, task must be one of '+', '.join(possible_tasks)
     return args
 
-def model_init(args):
-   # prepare model
-    model = restormer_arch.Restormer( 
-        inp_channels=6, 
-        out_channels=3, 
-        dim = 48,
-        num_blocks = [2,3,3,4], 
-        num_refinement_blocks = 4,
-        heads = [1,2,4,8],
-        ffn_expansion_factor = 2.66,
-        bias = False,
-        LayerNorm_type = 'WithBias',
-        dual_pixel_task = True        
-    )
+def detect_model_type(model_path):
+    """Auto-detect model type from filename and extension"""
+    filename = os.path.basename(model_path).lower()
 
-    if DEVICE.type == 'cpu':
-        state = convert_state_dict(torch.load(args.model_path, map_location='cpu')['model_state'])
+    # Check for safetensors extension
+    if filename.endswith('.safetensors'):
+        return 'docres'
+
+    # Check for common DocRes filename patterns
+    docres_patterns = ['docres', 'net_g', 'net_g_ema', 'ema']
+    for pattern in docres_patterns:
+        if pattern in filename:
+            return 'docres'
+
+    # Default to restormer for .pkl files
+    if filename.endswith('.pkl'):
+        return 'restormer'
+
+    return 'restormer'
+
+def load_checkpoint(model, checkpoint_path, model_type='restormer'):
+    """Load checkpoint from either .pkl or .safetensors file"""
+
+    if checkpoint_path.endswith('.safetensors'):
+        if safetensors_load is None:
+            raise ImportError("safetensors is required to load .safetensors files. Install with: pip install safetensors")
+
+        print(f"Loading safetensors checkpoint: {checkpoint_path}")
+        state_dict = safetensors_load(checkpoint_path)
+
+        # Handle potential prefix in state dict keys
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            # Remove common prefixes
+            if k.startswith('module.'):
+                k = k[7:]
+            new_state_dict[k] = v
+
+        model.load_state_dict(new_state_dict, strict=False)
+
+    elif checkpoint_path.endswith('.pkl') or checkpoint_path.endswith('.pth'):
+        print(f"Loading pickle checkpoint: {checkpoint_path}")
+        if DEVICE.type == 'cpu':
+            state = convert_state_dict(torch.load(checkpoint_path, map_location='cpu')['model_state'])
+        else:
+            state = convert_state_dict(torch.load(checkpoint_path, map_location='cuda:0')['model_state'])
+        model.load_state_dict(state)
     else:
-        state = convert_state_dict(torch.load(args.model_path, map_location='cuda:0')['model_state'])    
-    model.load_state_dict(state)
+        raise ValueError(f"Unsupported checkpoint format: {checkpoint_path}. Use .safetensors, .pkl, or .pth")
 
-    model.eval()
-    model = model.to(DEVICE)
+    return model
+
+def model_init(args):
+    # Determine model type
+    if args.model_type == 'auto':
+        model_type = detect_model_type(args.model_path)
+        print(f"Auto-detected model type: {model_type}")
+    else:
+        model_type = args.model_type
+        print(f"Using specified model type: {model_type}")
+
+    # Store model_type for later use
+    args.model_type_actual = model_type
+
+    if model_type == 'docres':
+        if not DOCRES_AVAILABLE:
+            raise ImportError("DocRes architecture not available. Make sure docres_arch.py is in the same directory.")
+
+        print("Initializing DocRes model...")
+        # DocRes with auto-coordinate injection (inp_channels=3 triggers auto-coords)
+        model = DocRes(
+            inp_channels=3,  # 3 triggers auto-coordinate injection -> 5 internal
+            out_channels=3,
+            dim=48,
+            num_blocks=[2,3,3,4],
+            num_refinement_blocks=4,
+            heads=[1,2,4,8],
+            ffn_expansion_factor=2.66,
+            bias=False,
+            LayerNorm_type='WithBias',
+            dual_pixel_task=True
+        )
+
+        model = load_checkpoint(model, args.model_path, model_type='docres')
+        model = model.to(DEVICE)
+        model.eval()
+
+    else:
+        print("Initializing Restormer model...")
+        # prepare model (Restormer - original)
+        model = restormer_arch.Restormer( 
+            inp_channels=6, 
+            out_channels=3, 
+            dim = 48,
+            num_blocks = [2,3,3,4], 
+            num_refinement_blocks = 4,
+            heads = [1,2,4,8],
+            ffn_expansion_factor = 2.66,
+            bias = False,
+            LayerNorm_type = 'WithBias',
+            dual_pixel_task = True        
+        )
+
+        model = load_checkpoint(model, args.model_path, model_type='restormer')
+        model = model.to(DEVICE)
+        model.eval()
+
     return model
 
 def inference_one_im(model,im_path,args):
     task = args.task
     memory_fix = args.memory_fix
+    model_type = getattr(args, 'model_type_actual', 'restormer')
 
     if task=='dewarping':
         prompt1,prompt2,prompt3,output = dewarping(model,im_path,memory_fix)
     elif task=='deshadowing':
-        prompt1,prompt2,prompt3,output = deshadowing(model,im_path,memory_fix)
+        prompt1,prompt2,prompt3,output = deshadowing(model,im_path,memory_fix, model_type)
     elif task=='appearance':
-        prompt1,prompt2,prompt3,output = appearance(model,im_path,memory_fix)
+        prompt1,prompt2,prompt3,output = appearance(model,im_path,memory_fix, model_type)
     elif task=='deblurring':
-        prompt1,prompt2,prompt3,output = deblurring(model,im_path,memory_fix)
+        prompt1,prompt2,prompt3,output = deblurring(model,im_path,memory_fix, model_type)
     elif task=='binarization':
-        prompt1,prompt2,prompt3,output = binarization(model,im_path,memory_fix)
+        prompt1,prompt2,prompt3,output = binarization(model,im_path,memory_fix, model_type)
     elif task=='end2end':
         prompt1,prompt2,prompt3,output = dewarping(model,im_path,memory_fix)
         cv2.imwrite('output/step1.jpg',output)
-        prompt1,prompt2,prompt3,output = deshadowing(model,'output/step1.jpg',memory_fix)
+        prompt1,prompt2,prompt3,output = deshadowing(model,'output/step1.jpg',memory_fix, model_type)
         cv2.imwrite('output/step2.jpg',output)
-        prompt1,prompt2,prompt3,output = appearance(model,'output/step2.jpg',memory_fix)
+        prompt1,prompt2,prompt3,output = appearance(model,'output/step2.jpg',memory_fix, model_type)
         # os.remove('output/step1.jpg')
         # os.remove('output/step2.jpg')
 
@@ -492,6 +618,7 @@ def save_results(
     out_folder: str,
     task: str,
     save_dtsprompt: bool,
+    prompt1, prompt2, prompt3, output
 ):
     os.makedirs(out_folder, exist_ok=True)
     im_name = os.path.split(img_path)[-1]
@@ -525,8 +652,12 @@ if __name__ == '__main__':
                 out_folder=args.out_folder,
                 task=args.task,
                 save_dtsprompt=args.save_dtsprompt,
+                prompt1=prompt1,
+                prompt2=prompt2,
+                prompt3=prompt3,
+                output=output
             )
-            
+
     else:
         ## inference
         prompt1,prompt2,prompt3,output = inference_one_im(model,img_source,args)
@@ -537,4 +668,8 @@ if __name__ == '__main__':
             out_folder=args.out_folder,
             task=args.task,
             save_dtsprompt=args.save_dtsprompt,
+            prompt1=prompt1,
+            prompt2=prompt2,
+            prompt3=prompt3,
+            output=output
         )
