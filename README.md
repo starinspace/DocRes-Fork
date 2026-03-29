@@ -34,7 +34,7 @@ python inference.py --im_path ./input/for_dewarping.png --task dewarping --memor
 ```
 You can also use your model trained with traiNNer-redux.
 ```bash
-python inference.py --im_path "input\for_binarization.png" --task binarization --model_path models\your_model.safetensors --memory_fix 2
+python inference.py --im_path ./input/for_binarization.png --task binarization --model_path models\your_model.safetensors --memory_fix 2
 ```
 
 - `--memory_fix`: fix Cuda out of Memory, use _0_ = No fix (standard), recommended for normal text in big images is _1_, or _2_, for large images with very small text try _3_ = 3000px.
