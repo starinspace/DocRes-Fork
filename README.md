@@ -10,9 +10,10 @@
 </p>
 
 # NEW
-2026-01-23 Updated the script to fix the Cuda out of Memory.
-2026-03-03 Fixed a bug with image size problem.
-2026-03-29 Add another model support for binarization
+* 2026-10-03 Fixed an issue with `requirements.txt` that was installing unsupported newer versions of some dependencies. Also added `run.bat`, which automatically processes all files in the `input` folder.
+* 2026-01-23 Updated the script to fix the Cuda out of Memory.
+* 2026-03-03 Fixed a bug with image size problem.
+* 2026-03-29 Add another model support for binarization
 
 # TO DO
 * Create GUI
